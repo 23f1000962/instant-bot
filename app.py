@@ -1,7 +1,7 @@
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application
-from handlers.messages import register_handlers
+from messages import register_handlers
 import os
 
 BOT_TOKEN=os.environ["BOT_TOKEN"]
