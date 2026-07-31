@@ -1,9 +1,36 @@
-import yt_dlp,tempfile,os
-def download_instagram(url):
-    d=tempfile.mkdtemp()
-    out=os.path.join(d,"%(title).80s.%(ext)s")
-    opts={"outtmpl":out,"format":"best","quiet":True,"noplaylist":True,
-          "merge_output_format":"mp4","retries":3}
-    with yt_dlp.YoutubeDL(opts) as y:
-        info=y.extract_info(url,download=True)
-        return y.prepare_filename(info)
+import os
+import tempfile
+import yt_dlp
+
+
+def download_instagram(url: str) -> str:
+    temp_dir = tempfile.mkdtemp()
+
+    output_template = os.path.join(
+        temp_dir,
+        "%(title).80s.%(ext)s"
+    )
+
+    ydl_opts = {
+        "outtmpl": output_template,
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
+        "quiet": True,
+        "noplaylist": True,
+        "retries": 5,
+        "socket_timeout": 30,
+        "restrictfilenames": True,
+        "nopart": True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+        filename = ydl.prepare_filename(info)
+
+        if not os.path.exists(filename):
+            base, _ = os.path.splitext(filename)
+            if os.path.exists(base + ".mp4"):
+                filename = base + ".mp4"
+
+        return filename
