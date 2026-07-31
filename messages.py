@@ -39,7 +39,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(path)
 
     except Exception as e:
-      logger.exception(e)
+      logger.exception("Download failed", exc_info=True)
 
       await status.edit_text(
         f"❌ Error:\n{str(e)}"
