@@ -1,6 +1,9 @@
 import os
 import tempfile
 import yt_dlp
+import shutil
+
+print("FFmpeg:", shutil.which("ffmpeg"))
 
 
 def download_instagram(url: str) -> str:
@@ -15,7 +18,8 @@ def download_instagram(url: str) -> str:
     "outtmpl": output_template,
     "format": "bestvideo+bestaudio/best",
     "merge_output_format": "mp4",
-    "quiet": True,
+    "quiet": False,
+    "verbose": True,
     "noplaylist": True,
     "retries": 5,
     "extractor_retries": 5,
