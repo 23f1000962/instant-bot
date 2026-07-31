@@ -1,23 +1,60 @@
-from flask import Flask, request
+import os
+import logging
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from telegram import Update
 from telegram.ext import Application
+
 from messages import register_handlers
-import os
 
-BOT_TOKEN=os.environ["BOT_TOKEN"]
-SECRET=os.environ["WEBHOOK_SECRET"]
+logging.basicConfig(level=logging.INFO)
 
-application=Application.builder().token(BOT_TOKEN).build()
-register_handlers(application)
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
-app=Flask(__name__)
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+register_handlers(telegram_app)
+
+app = FastAPI()
+
+
+@app.on_event("startup")
+async def startup():
+    await telegram_app.initialize()
+    await telegram_app.start()
+    logging.info("Telegram application started")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await telegram_app.stop()
+    await telegram_app.shutdown()
+    logging.info("Telegram application stopped")
+
 
 @app.get("/")
-def health():
-    return {"status":"ok"}
+async def health():
+    return {"status": "ok"}
 
-@app.post(f"/webhook/{SECRET}")
-async def webhook():
-    update=Update.de_json(request.get_json(force=True),application.bot)
-    await application.process_update(update)
-    return {"ok":True}
+
+@app.post(f"/webhook/{WEBHOOK_SECRET}")
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+
+        update = Update.de_json(data, telegram_app.bot)
+
+        await telegram_app.process_update(update)
+
+        return JSONResponse(
+            content={"ok": True},
+            status_code=200,
+        )
+
+    except Exception:
+        logging.exception("Webhook error")
+        return JSONResponse(
+            content={"ok": False},
+            status_code=500,
+        )
