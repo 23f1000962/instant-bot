@@ -39,12 +39,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(path)
 
     except Exception as e:
-        logger.exception("Download failed")
+      logger.exception(e)
 
-        await status.edit_text(
-            "❌ Unable to download this Instagram post.\n"
-            "It may be private, unavailable, or temporarily unsupported."
-        )
+      await status.edit_text(
+        f"❌ Error:\n{str(e)}"
+      )
 
 
 def register_handlers(application):
