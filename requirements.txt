@@ -1,4 +1,4 @@
+fastapi
+uvicorn
 python-telegram-bot>=22
-Flask>=3
-gunicorn>=23
-yt-dlp>=2025.1
+yt-dlp
