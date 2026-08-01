@@ -1,9 +1,6 @@
 import os
 import tempfile
 import yt_dlp
-import shutil
-
-print("FFmpeg:", shutil.which("ffmpeg"))
 
 
 def download_instagram(url: str) -> str:
@@ -16,10 +13,8 @@ def download_instagram(url: str) -> str:
 
     ydl_opts = {
         "outtmpl": output_template,
-        "format": "bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
-        "quiet": False,
-        "verbose": True,
+        "quiet": True,
         "noplaylist": True,
         "retries": 5,
         "extractor_retries": 5,
@@ -30,11 +25,16 @@ def download_instagram(url: str) -> str:
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+        info = ydl.extract_info(url, download=True)
 
-        print("=" * 80)
+        filename = ydl.prepare_filename(info)
 
-        for f in info.get("formats", []):
+        if not os.path.exists(filename):
+            base, _ = os.path.splitext(filename)
+            if os.path.exists(base + ".mp4"):
+                filename = base + ".mp4"
+
+        return filename        for f in info.get("formats", []):
             print(
                 f"id={f.get('format_id')}, "
                 f"ext={f.get('ext')}, "
