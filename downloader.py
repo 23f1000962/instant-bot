@@ -15,41 +15,44 @@ def download_instagram(url: str) -> str:
     )
 
     ydl_opts = {
-    "outtmpl": output_template,
-    "format": "bestvideo+bestaudio/best",
-    "merge_output_format": "mp4",
-    "quiet": False,
-    "verbose": True,
-    "noplaylist": True,
-    "retries": 5,
-    "extractor_retries": 5,
-    "socket_timeout": 120,
-    "http_chunk_size": 10485760,
-    "restrictfilenames": True,
-    "nopart": True,
+        "outtmpl": output_template,
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
+        "quiet": False,
+        "verbose": True,
+        "noplaylist": True,
+        "retries": 5,
+        "extractor_retries": 5,
+        "socket_timeout": 120,
+        "http_chunk_size": 10485760,
+        "restrictfilenames": True,
+        "nopart": True,
     }
 
-with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-    info = ydl.extract_info(url, download=False)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
 
-    print("=" * 80)
+        print("=" * 80)
 
-    for f in info.get("formats", []):
-        print(
-            f"id={f.get('format_id')}, "
-            f"ext={f.get('ext')}, "
-            f"vcodec={f.get('vcodec')}, "
-            f"acodec={f.get('acodec')}"
-        )
+        for f in info.get("formats", []):
+            print(
+                f"id={f.get('format_id')}, "
+                f"ext={f.get('ext')}, "
+                f"vcodec={f.get('vcodec')}, "
+                f"acodec={f.get('acodec')}"
+            )
 
-    print("=" * 80)
+        print("=" * 80)
 
-    raise Exception("Format listing complete")
-    filename = ydl.prepare_filename(info)
+        raise Exception("Format listing complete")
 
-    if not os.path.exists(filename):
+        # The code below won't execute because of the exception.
+        # Keep it only if you remove the exception later.
+        filename = ydl.prepare_filename(info)
+
+        if not os.path.exists(filename):
             base, _ = os.path.splitext(filename)
             if os.path.exists(base + ".mp4"):
                 filename = base + ".mp4"
 
-    return filename
+        return filename
