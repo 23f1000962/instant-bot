@@ -29,14 +29,27 @@ def download_instagram(url: str) -> str:
     "nopart": True,
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    info = ydl.extract_info(url, download=False)
 
-        filename = ydl.prepare_filename(info)
+    print("=" * 80)
 
-        if not os.path.exists(filename):
+    for f in info.get("formats", []):
+        print(
+            f"id={f.get('format_id')}, "
+            f"ext={f.get('ext')}, "
+            f"vcodec={f.get('vcodec')}, "
+            f"acodec={f.get('acodec')}"
+        )
+
+    print("=" * 80)
+
+    raise Exception("Format listing complete")
+    filename = ydl.prepare_filename(info)
+
+    if not os.path.exists(filename):
             base, _ = os.path.splitext(filename)
             if os.path.exists(base + ".mp4"):
                 filename = base + ".mp4"
 
-        return filename
+    return filename
