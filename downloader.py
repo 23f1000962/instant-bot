@@ -1,37 +1,40 @@
 import os
 import tempfile
-import yt_dlp
+import requests
+
+RAPIDAPI_KEY = os.environ["RAPIDAPI_KEY"]
+
+API_URL = "https://instagram120.p.rapidapi.com/api/instagram/links"
+API_HOST = "instagram120.p.rapidapi.com"
 
 
 def download_instagram(url: str) -> str:
-    temp_dir = tempfile.mkdtemp()
-
-    output_template = os.path.join(
-        temp_dir,
-        "%(title).80s.%(ext)s"
-    )
-
-    ydl_opts = {
-        "outtmpl": output_template,
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "noplaylist": True,
-        "retries": 5,
-        "extractor_retries": 5,
-        "socket_timeout": 120,
-        "http_chunk_size": 10485760,
-        "restrictfilenames": True,
-        "nopart": True,
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": API_HOST,
+        "Content-Type": "application/json"
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    payload = {
+        "url": url
+    }
 
-        filename = ydl.prepare_filename(info)
+    response = requests.post(API_URL, json=payload, headers=headers)
+    response.raise_for_status()
 
-        if not os.path.exists(filename):
-            base, _ = os.path.splitext(filename)
-            if os.path.exists(base + ".mp4"):
-                filename = base + ".mp4"
+    data = response.json()
 
-        return filename
+    media_url = data[0]["urls"][0]["url"]
+
+    temp_dir = tempfile.mkdtemp()
+    filename = os.path.join(temp_dir, "instagram.mp4")
+
+    media = requests.get(media_url, stream=True)
+    media.raise_for_status()
+
+    with open(filename, "wb") as f:
+        for chunk in media.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+
+    return filename
