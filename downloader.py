@@ -9,11 +9,11 @@ API_URL = "https://instagram120.p.rapidapi.com/api/instagram/links"
 API_HOST = "instagram120.p.rapidapi.com"
 
 
-def download_instagram(url: str) -> str:
+def download_instagram(url: str):
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": API_HOST,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     payload = {
@@ -28,29 +28,40 @@ def download_instagram(url: str) -> str:
     if not data:
         raise Exception("No media found.")
 
-    media_info = data[0]["urls"][0]
+    temp_dir = tempfile.mkdtemp()
+    filenames = []
 
-    media_url = media_info["url"]
-    extension = media_info.get("extension", "mp4")
-
-    username = data[0]["meta"].get("username", "instagram")
-
-    # Make username safe for filenames
+    username = data[0].get("meta", {}).get("username", "instagram")
     username = re.sub(r'[\\/*?:"<>|]', "_", username)
 
-    temp_dir = tempfile.mkdtemp()
+    for index, item in enumerate(data):
 
-    filename = os.path.join(
-        temp_dir,
-        f"{username}.{extension}"
-    )
+        urls = item.get("urls", [])
 
-    media = requests.get(media_url, stream=True)
-    media.raise_for_status()
+        if not urls:
+            continue
 
-    with open(filename, "wb") as f:
-        for chunk in media.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
+        media = urls[0]
 
-    return filename
+        media_url = media["url"]
+        extension = media.get("extension", "mp4").lower()
+
+        filename = os.path.join(
+            temp_dir,
+            f"{username}_{index + 1}.{extension}"
+        )
+
+        media_response = requests.get(media_url, stream=True)
+        media_response.raise_for_status()
+
+        with open(filename, "wb") as f:
+            for chunk in media_response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        filenames.append(filename)
+
+    if not filenames:
+        raise Exception("No downloadable media found.")
+
+    return filenames
