@@ -24,26 +24,31 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = await update.message.reply_text("⏳ Downloading...")
 
     try:
-        path = download_instagram(url)
+        files = download_instagram(url)
 
-        with open(path, "rb") as media:
+        # Convert single file to list
+        if isinstance(files, str):
+            files = [files]
 
-            if path.lower().endswith((".mp4", ".mov", ".mkv")):
-                await update.message.reply_video(video=media)
-            else:
-                await update.message.reply_document(document=media)
+        for path in files:
+            with open(path, "rb") as media:
+
+                if path.lower().endswith((".mp4", ".mov", ".mkv")):
+                    await update.message.reply_video(video=media)
+                else:
+                    await update.message.reply_photo(photo=media)
+
+            if os.path.exists(path):
+                os.remove(path)
 
         await status.delete()
 
-        if os.path.exists(path):
-            os.remove(path)
-
     except Exception as e:
-      logger.exception("Download failed", exc_info=True)
+        logger.exception("Download failed")
 
-      await status.edit_text(
-        f"❌ Error:\n{str(e)}"
-      )
+        await status.edit_text(
+            f"❌ Error:\n{str(e)}"
+        )
 
 
 def register_handlers(application):
