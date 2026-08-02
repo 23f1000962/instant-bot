@@ -20,7 +20,15 @@ def download_instagram(url: str):
         "url": url
     }
 
-    response = requests.post(API_URL, json=payload, headers=headers)
+    session = requests.Session()
+
+    response = session.post(
+        API_URL,
+        json=payload,
+        headers=headers,
+        timeout=120
+    )
+
     response.raise_for_status()
 
     data = response.json()
@@ -43,7 +51,11 @@ def download_instagram(url: str):
 
         media = urls[0]
 
-        media_url = media["url"]
+        media_url = media.get("url")
+
+        if not media_url:
+            continue
+
         extension = media.get("extension", "mp4").lower()
 
         filename = os.path.join(
@@ -51,15 +63,22 @@ def download_instagram(url: str):
             f"{username}_{index + 1}.{extension}"
         )
 
-        media_response = requests.get(media_url, stream=True)
+        media_response = session.get(
+            media_url,
+            stream=True,
+            timeout=300
+        )
+
         media_response.raise_for_status()
 
         with open(filename, "wb") as f:
-            for chunk in media_response.iter_content(chunk_size=8192):
+            for chunk in media_response.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
 
         filenames.append(filename)
+
+    session.close()
 
     if not filenames:
         raise Exception("No downloadable media found.")
