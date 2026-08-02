@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import requests
 
@@ -24,10 +25,25 @@ def download_instagram(url: str) -> str:
 
     data = response.json()
 
-    media_url = data[0]["urls"][0]["url"]
+    if not data:
+        raise Exception("No media found.")
+
+    media_info = data[0]["urls"][0]
+
+    media_url = media_info["url"]
+    extension = media_info.get("extension", "mp4")
+
+    username = data[0]["meta"].get("username", "instagram")
+
+    # Make username safe for filenames
+    username = re.sub(r'[\\/*?:"<>|]', "_", username)
 
     temp_dir = tempfile.mkdtemp()
-    filename = os.path.join(temp_dir, "instagram.mp4")
+
+    filename = os.path.join(
+        temp_dir,
+        f"{username}.{extension}"
+    )
 
     media = requests.get(media_url, stream=True)
     media.raise_for_status()
@@ -35,6 +51,9 @@ def download_instagram(url: str) -> str:
     with open(filename, "wb") as f:
         for chunk in media.iter_content(chunk_size=8192):
             if chunk:
+                f.write(chunk)
+
+    return filename            if chunk:
                 f.write(chunk)
 
     return filename
