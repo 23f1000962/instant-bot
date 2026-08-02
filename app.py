@@ -13,7 +13,16 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
-telegram_app = Application.builder().token(BOT_TOKEN).build()
+telegram_app = (
+    Application.builder()
+    .token(BOT_TOKEN)
+    .connect_timeout(60)
+    .read_timeout(300)
+    .write_timeout(300)
+    .pool_timeout(300)
+    .build()
+)
+
 register_handlers(telegram_app)
 
 app = FastAPI()
