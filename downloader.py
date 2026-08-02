@@ -53,7 +53,4 @@ def download_instagram(url: str) -> str:
             if chunk:
                 f.write(chunk)
 
-    return filename            if chunk:
-                f.write(chunk)
-
     return filename
