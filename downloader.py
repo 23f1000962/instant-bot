@@ -1,12 +1,54 @@
 import os
 import re
 import tempfile
+from urllib.parse import urlparse
+
 import requests
 
 RAPIDAPI_KEY = os.environ["RAPIDAPI_KEY"]
 
-API_URL = "https://instagram120.p.rapidapi.com/api/instagram/links"
+MEDIA_API_URL = "https://instagram120.p.rapidapi.com/api/instagram/links"
+PROFILE_API_URL = "https://instagram120.p.rapidapi.com/api/instagram/profile"
 API_HOST = "instagram120.p.rapidapi.com"
+
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'[\\/*?:"<>|]', "_", name)
+
+
+def extract_username(url: str) -> str:
+    path = urlparse(url).path.strip("/")
+    return path.split("/")[0]
+
+
+def is_profile_url(url: str) -> bool:
+    path = urlparse(url).path.strip("/")
+    parts = path.split("/")
+
+    if not parts or parts[0] == "":
+        return False
+
+    return parts[0] not in (
+        "p",
+        "reel",
+        "tv",
+        "stories",
+        "explore",
+    )
+
+
+def download_file(session, media_url, filename):
+    response = session.get(
+        media_url,
+        stream=True,
+        timeout=300,
+    )
+    response.raise_for_status()
+
+    with open(filename, "wb") as f:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
 
 
 def download_instagram(url: str):
@@ -16,71 +58,109 @@ def download_instagram(url: str):
         "Content-Type": "application/json",
     }
 
-    payload = {
-        "url": url
-    }
-
     session = requests.Session()
-
-    response = session.post(
-        API_URL,
-        json=payload,
-        headers=headers,
-        timeout=120
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    if not data:
-        raise Exception("No media found.")
 
     temp_dir = tempfile.mkdtemp()
     filenames = []
 
-    username = data[0].get("meta", {}).get("username", "instagram")
-    username = re.sub(r'[\\/*?:"<>|]', "_", username)
+    try:
 
-    for index, item in enumerate(data):
+        # ---------------- PROFILE ---------------- #
 
-        urls = item.get("urls", [])
+        if is_profile_url(url):
 
-        if not urls:
-            continue
+            username = extract_username(url)
 
-        media = urls[0]
+            response = session.post(
+                PROFILE_API_URL,
+                json={
+                    "username": username
+                },
+                headers=headers,
+                timeout=120,
+            )
 
-        media_url = media.get("url")
+            response.raise_for_status()
 
-        if not media_url:
-            continue
+            result = response.json().get("result", {})
 
-        extension = media.get("extension", "mp4").lower()
+            media_url = (
+                result.get("profile_pic_url_hd")
+                or result.get("profile_pic_url")
+            )
 
-        filename = os.path.join(
-            temp_dir,
-            f"{username}_{index + 1}.{extension}"
+            if not media_url:
+                raise Exception("Profile picture not found.")
+
+            username = sanitize_filename(
+                result.get("username", username)
+            )
+
+            filename = os.path.join(
+                temp_dir,
+                f"{username}_profile.jpg"
+            )
+
+            download_file(session, media_url, filename)
+
+            filenames.append(filename)
+
+            return filenames
+
+        # ---------------- POSTS / REELS ---------------- #
+
+        response = session.post(
+            MEDIA_API_URL,
+            json={
+                "url": url
+            },
+            headers=headers,
+            timeout=120,
         )
 
-        media_response = session.get(
-            media_url,
-            stream=True,
-            timeout=300
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data:
+            raise Exception("No media found.")
+
+        username = sanitize_filename(
+            data[0].get("meta", {}).get("username", "instagram")
         )
 
-        media_response.raise_for_status()
+        for index, item in enumerate(data):
 
-        with open(filename, "wb") as f:
-            for chunk in media_response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    f.write(chunk)
+            urls = item.get("urls", [])
 
-        filenames.append(filename)
+            if not urls:
+                continue
 
-    session.close()
+            media = urls[0]
 
-    if not filenames:
-        raise Exception("No downloadable media found.")
+            media_url = media.get("url")
 
-    return filenames
+            if not media_url:
+                continue
+
+            extension = media.get(
+                "extension",
+                "mp4"
+            ).lower()
+
+            filename = os.path.join(
+                temp_dir,
+                f"{username}_{index + 1}.{extension}"
+            )
+
+            download_file(session, media_url, filename)
+
+            filenames.append(filename)
+
+        if not filenames:
+            raise Exception("No downloadable media found.")
+
+        return filenames
+
+    finally:
+        session.close()
