@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Welcome folks! this bot takes time to wake up.🫡\n\n"
+        "👋 Welcome folks!\n"
+        "This bot takes time to wake up.🫡\n\n"
         "📥 Instructions to use this bot:\n\n"
         "• This bot works with public Instagram account's medias only.\n"
         "• If you return after a while, send 'Hi', 'Hey', or 'Start' to wake up the bot server.\n"
