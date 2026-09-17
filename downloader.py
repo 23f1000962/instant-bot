@@ -5,14 +5,274 @@ from urllib.parse import urlparse
 
 import requests
 
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 RAPIDAPI_KEY = os.environ["RAPIDAPI_KEY"]
 
-MEDIA_API_URL = "https://instagram120.p.rapidapi.com/api/instagram/links"
-PROFILE_API_URL = "https://instagram120.p.rapidapi.com/api/instagram/profile"
-API_HOST = "instagram120.p.rapidapi.com"
+RAPIDAPI_HOST = os.getenv(
+    "RAPIDAPI_HOST",
+    "instagram-scraper2.p.rapidapi.com",
+)
 
-VIDEO_EXTENSIONS = {"mp4", "m4v", "mov", "webm", "mkv"}
-IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
+BASE_URL = f"https://{RAPIDAPI_HOST}"
+
+
+VIDEO_EXTENSIONS = {
+    "mp4",
+    "m4v",
+    "mov",
+    "webm",
+    "mkv",
+}
+
+IMAGE_EXTENSIONS = {
+    "jpg",
+    "jpeg",
+    "png",
+    "webp",
+    "gif",
+}
+
+
+# ============================================================
+# BASIC HELPERS
+# ============================================================
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'[\\/*?:"<>|]', "_", name)
+
+
+def instagram_parts(url: str):
+    """
+    Return the path components of an Instagram URL.
+    """
+
+    return [
+        part.lower()
+        for part in urlparse(url).path.strip("/").split("/")
+        if part
+    ]
+
+
+def extract_shortcode(url: str):
+    """
+    Extract Instagram shortcode from:
+
+        /reel/ABC123/
+        /reels/ABC123/
+        /p/ABC123/
+        /tv/ABC123/
+    """
+
+    parts = instagram_parts(url)
+
+    for content_type in ("reel", "reels", "p", "tv"):
+        if content_type in parts:
+            index = parts.index(content_type)
+
+            if index + 1 < len(parts):
+                return parts[index + 1]
+
+    return None
+
+
+def extract_username(url: str):
+    """
+    Extract username from a normal profile URL.
+
+    Example:
+        https://www.instagram.com/cristiano/
+        -> cristiano
+    """
+
+    parts = instagram_parts(url)
+
+    if not parts:
+        return None
+
+    reserved = {
+        "reel",
+        "reels",
+        "p",
+        "tv",
+        "stories",
+        "explore",
+        "accounts",
+        "direct",
+        "about",
+        "developer",
+        "web",
+    }
+
+    if parts[0] in reserved:
+        return None
+
+    return parts[0]
+
+
+def is_reel_url(url: str) -> bool:
+    parts = instagram_parts(url)
+    return "reel" in parts or "reels" in parts
+
+
+def is_post_url(url: str) -> bool:
+    parts = instagram_parts(url)
+    return "p" in parts or "tv" in parts
+
+
+def is_profile_url(url: str) -> bool:
+    """
+    True only for a normal Instagram profile URL.
+    """
+
+    parts = instagram_parts(url)
+
+    if not parts:
+        return False
+
+    reserved = {
+        "reel",
+        "reels",
+        "p",
+        "tv",
+        "stories",
+        "explore",
+        "accounts",
+        "direct",
+        "about",
+        "developer",
+        "web",
+    }
+
+    return len(parts) == 1 and parts[0] not in reserved
+
+
+# ============================================================
+# API HELPERS
+# ============================================================
+
+def api_headers():
+    return {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+    }
+
+
+def api_get(session, endpoint, params=None):
+    """
+    Perform GET request against the new RapidAPI Instagram API.
+    """
+
+    url = f"{BASE_URL}/{endpoint.lstrip('/')}"
+
+    response = session.get(
+        url,
+        headers=api_headers(),
+        params=params or {},
+        timeout=120,
+    )
+
+    # Give a useful error for RapidAPI proxy errors.
+    if response.status_code == 407:
+        raise RuntimeError(
+            "RapidAPI returned HTTP 407. "
+            "The RapidAPI proxy/upstream connection could not be established."
+        )
+
+    if response.status_code == 401:
+        raise RuntimeError(
+            "RapidAPI authentication failed. "
+            "Check RAPIDAPI_KEY."
+        )
+
+    if response.status_code == 403:
+        raise RuntimeError(
+            "RapidAPI rejected the request. "
+            "Check your subscription and API permissions."
+        )
+
+    if response.status_code == 429:
+        raise RuntimeError(
+            "RapidAPI rate limit exceeded."
+        )
+
+    response.raise_for_status()
+
+    try:
+        return response.json()
+
+    except ValueError as exc:
+        raise RuntimeError(
+            "Instagram API returned an invalid JSON response."
+        ) from exc
+
+
+# ============================================================
+# GENERIC JSON HELPERS
+# ============================================================
+
+def walk_dicts(value):
+    """
+    Recursively yield every dictionary inside an arbitrary
+    JSON structure.
+    """
+
+    if isinstance(value, dict):
+        yield value
+
+        for child in value.values():
+            yield from walk_dicts(child)
+
+    elif isinstance(value, list):
+
+        for child in value:
+            yield from walk_dicts(child)
+
+
+def first_value(data, keys):
+    """
+    Search recursively for the first value matching one of
+    the supplied keys.
+    """
+
+    wanted = {key.lower() for key in keys}
+
+    for obj in walk_dicts(data):
+
+        for key, value in obj.items():
+
+            if key.lower() in wanted and value not in (
+                None,
+                "",
+                [],
+                {},
+            ):
+                return value
+
+    return None
+
+
+def find_media_items(data):
+    """
+    Try to locate media/reel/post objects inside different
+    response structures used by Instagram scraping APIs.
+    """
+
+    candidates = []
+
+    for obj in walk_dicts(data):
+
+        # Common media object identifiers.
+        if any(
+            key in obj
+            for key in (
+                "pk",
+                "id",
+                "code",
+                "shortNS = {"jpg", "jpeg", "png", "webp", "gif"}
 
 
 def sanitize_filename(name: str) -> str:
