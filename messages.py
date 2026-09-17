@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -11,95 +12,263 @@ from telegram.ext import (
 
 from downloader import download_instagram
 
+
 logger = logging.getLogger(__name__)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================================================
+# /start
+# ============================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if update.message is None:
+        return
+
     await update.message.reply_text(
-        "👋 Welcome folks!\n"
-        "This bot takes time to wake up.🫡\n\n"
-        "📥 Instructions to use this bot:\n\n"
-        "• This bot works with public Instagram account's medias only.\n"
-        "• If you return after a while, send 'Hi', 'Hey', or 'Start' to wake up the bot server.\n"
-        "• Once the bot responds, send a valid Instagram Post or Reel link.\n"
-        "• If an error occurs, wait a few seconds and resend the same link."
+        "👋 Welcome!\n\n"
+        "📥 Send me a public Instagram link and I will "
+        "try to download the media.\n\n"
+
+        "Supported:\n"
+        "• 🎬 Reels\n"
+        "• 🖼️ Image posts\n"
+        "• 🎥 Video posts\n"
+        "• 📚 Carousel posts\n"
+        "• 👤 Profile picture\n\n"
+
+        "⚠️ Only publicly accessible Instagram content "
+        "can be downloaded."
     )
 
 
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message is None or update.message.text is None:
+# ============================================================
+# MAIN MESSAGE HANDLER
+# ============================================================
+
+async def handle(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if update.message is None:
+        return
+
+    if update.message.text is None:
         return
 
     text = update.message.text.strip()
+
+    if not text:
+        return
+
     lower_text = text.lower()
 
+    # --------------------------------------------------------
     # Wake-up messages
-    if lower_text in ("hi", "hey", "hello", "start"):
+    # --------------------------------------------------------
+
+    if lower_text in (
+        "hi",
+        "hey",
+        "hello",
+        "start",
+    ):
+
         await update.message.reply_text(
             "✅ Bot is awake!\n\n"
-            "Now send a valid Instagram Post or Reel link."
+            "Now send an Instagram Reel, Post, "
+            "or Profile link."
         )
+
         return
 
+    # --------------------------------------------------------
     # Validate Instagram URL
-    if "instagram.com" not in text.lower():
+    # --------------------------------------------------------
+
+    if "instagram.com" not in lower_text:
+
         await update.message.reply_text(
-            "⚠️ Please send a valid Instagram Post or Reel link."
+            "⚠️ Please send a valid Instagram URL."
         )
+
         return
 
-    status = await update.message.reply_text("⏳ Downloading...")
+    # --------------------------------------------------------
+    # Status message
+    # --------------------------------------------------------
+
+    status = await update.message.reply_text(
+        "⏳ Processing your Instagram link..."
+    )
+
+    files = []
 
     try:
-        files = download_instagram(text)
 
-        # Convert single file to list
-        if isinstance(files, str):
-            files = [files]
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # download_instagram() is synchronous because it uses
+        # requests/yt-dlp.
+        #
+        # Run it in a separate thread so it doesn't block
+        # Telegram's async event loop.
+        # ----------------------------------------------------
+
+        files = await asyncio.to_thread(
+            download_instagram,
+            text,
+        )
+
+        if not files:
+
+            raise RuntimeError(
+                "No downloadable media was returned."
+            )
+
+        # ----------------------------------------------------
+        # Send downloaded files
+        # ----------------------------------------------------
 
         for path in files:
-            with open(path, "rb") as media:
 
-                if path.lower().endswith((".mp4", ".mov", ".mkv")):
-                    await update.message.reply_video(video=media)
-                else:
-                    await update.message.reply_photo(photo=media)
+            if not os.path.isfile(path):
 
-            if os.path.exists(path):
+                logger.warning(
+                    "File does not exist: %s",
+                    path,
+                )
+
+                continue
+
+            extension = (
+                os.path.splitext(path)[1]
+                .lower()
+            )
+
+            # ------------------------------------------------
+            # VIDEO
+            # ------------------------------------------------
+
+            if extension in (
+                ".mp4",
+                ".m4v",
+                ".mov",
+                ".webm",
+                ".mkv",
+            ):
+
+                with open(path, "rb") as media:
+
+                    await update.message.reply_video(
+                        video=media,
+                        supports_streaming=True,
+                    )
+
+            # ------------------------------------------------
+            # IMAGE
+            # ------------------------------------------------
+
+            elif extension in (
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".webp",
+                ".gif",
+            ):
+
+                with open(path, "rb") as media:
+
+                    await update.message.reply_photo(
+                        photo=media,
+                    )
+
+            # ------------------------------------------------
+            # UNKNOWN FILE
+            # ------------------------------------------------
+
+            else:
+
+                with open(path, "rb") as media:
+
+                    await update.message.reply_document(
+                        document=media,
+                    )
+
+            # ------------------------------------------------
+            # Delete file immediately after sending
+            # ------------------------------------------------
+
+            try:
+
                 os.remove(path)
 
-        await status.delete()
+            except OSError:
 
-    except Exception as e:
-        logger.exception("Download failed")
+                logger.warning(
+                    "Could not remove file: %s",
+                    path,
+                )
 
-        error = str(e).lower()
+        # ----------------------------------------------------
+        # Remove status
+        # ----------------------------------------------------
 
-        if "502" in error:
-            await status.edit_text(
-                "❌ Failed to reach Instagram.\n\n"
-                "Please resend the link after a few seconds."
-            )
+        try:
 
-        elif "timeout" in error or "timed out" in error:
-            await status.edit_text(
-                "⏱️ Response time exceeded.\n\n"
-                "Please resend the link after a few seconds."
-            )
+            await status.delete()
 
-        else:
-            await status.edit_text(
-                "❌ Something went wrong.\n\n"
-                "Please wait a few seconds and resend the link."
-            )
+        except Exception:
 
+            pass
 
-def register_handlers(application):
-    application.add_handler(CommandHandler("start", start))
+    except Exception as error:
 
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle,
+        logger.exception(
+            "Instagram download failed",
         )
-    )
+
+        error_text = str(error).lower()
+
+        # ----------------------------------------------------
+        # RapidAPI errors
+        # ----------------------------------------------------
+
+        if "407" in error_text:
+
+            message = (
+                "❌ Instagram API connection failed.\n\n"
+                "RapidAPI returned HTTP 407. "
+                "This is usually an API/provider connection "
+                "problem, not a Telegram bot problem."
+            )
+
+        elif "401" in error_text:
+
+            message = (
+                "❌ RapidAPI authentication failed.\n\n"
+                "Please check your RAPIDAPI_KEY."
+            )
+
+        elif "403" in error_text:
+
+            message = (
+                "❌ RapidAPI rejected the request.\n\n"
+                "Check that your RapidAPI subscription "
+                "for the Instagram API is active."
+            )
+
+        elif "429" in error_text:
+
+            message = (
+                "⚠️ RapidAPI rate limit reached.\n\n"
+                "Please try again later."
+            )
+
+        # ----------------------------------------------------
+        # Instagram
