@@ -3,3 +3,4 @@ uvicorn[standard]>=0.30
 python-telegram-bot>=22.0
 requests>=2.32.0
 python-multipart
+yt-dlp>=2026.1.0
