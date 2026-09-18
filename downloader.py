@@ -11,14 +11,30 @@ import requests
 # CONFIGURATION
 # ============================================================
 
-RAPIDAPI_KEY = os.environ["RAPIDAPI_KEY"]
+# ------------------------------------------------------------
+# PRIMARY RAPIDAPI
+# ------------------------------------------------------------
 
-RAPIDAPI_HOST = os.getenv(
+PRIMARY_API_KEY = os.getenv("RAPIDAPI_KEY")
+PRIMARY_API_HOST = os.getenv(
     "RAPIDAPI_HOST",
     "instagram-scraper2.p.rapidapi.com",
 )
 
-BASE_URL = f"https://{RAPIDAPI_HOST}"
+# ------------------------------------------------------------
+# BACKUP RAPIDAPI - INSTAGRAM LOOTER
+# ------------------------------------------------------------
+
+BACKUP_API_KEY = os.getenv("RAPIDAPI_BACKUP_KEY")
+BACKUP_API_HOST = os.getenv(
+    "RAPIDAPI_BACKUP_HOST",
+    "instagram-looter2.p.rapidapi.com",
+)
+
+
+# ------------------------------------------------------------
+# Media extensions
+# ------------------------------------------------------------
 
 VIDEO_EXTENSIONS = {
     ".mp4",
@@ -38,14 +54,18 @@ IMAGE_EXTENSIONS = {
 
 
 # ============================================================
+# CUSTOM EXCEPTION
+# ============================================================
+
+class APIError(RuntimeError):
+    pass
+
+
+# ============================================================
 # URL HELPERS
 # ============================================================
 
 def instagram_parts(url: str):
-    """
-    Return the path components of an Instagram URL.
-    """
-
     return [
         part
         for part in urlparse(url).path.strip("/").split("/")
@@ -56,6 +76,7 @@ def instagram_parts(url: str):
 def extract_shortcode(url: str):
     """
     Extract shortcode from:
+
         /reel/ABC123/
         /reels/ABC123/
         /p/ABC123/
@@ -75,9 +96,7 @@ def extract_shortcode(url: str):
         "p",
         "tv",
     ):
-
         if marker in lower_parts:
-
             index = lower_parts.index(marker)
 
             if index + 1 < len(parts):
@@ -89,10 +108,6 @@ def extract_shortcode(url: str):
 def extract_username(url: str):
     """
     Extract username from a profile URL.
-
-    Example:
-        https://www.instagram.com/instagram/
-        -> instagram
     """
 
     parts = instagram_parts(url)
@@ -122,35 +137,7 @@ def extract_username(url: str):
     return username
 
 
-def is_reel_url(url: str):
-    parts = [
-        part.lower()
-        for part in instagram_parts(url)
-    ]
-
-    return (
-        "reel" in parts
-        or "reels" in parts
-    )
-
-
-def is_post_url(url: str):
-    parts = [
-        part.lower()
-        for part in instagram_parts(url)
-    ]
-
-    return (
-        "p" in parts
-        or "tv" in parts
-    )
-
-
 def is_profile_url(url: str):
-    """
-    Determine whether the URL is a simple profile URL.
-    """
-
     parts = instagram_parts(url)
 
     if len(parts) != 1:
@@ -174,108 +161,12 @@ def is_profile_url(url: str):
 
 
 # ============================================================
-# RAPIDAPI
-# ============================================================
-
-def api_headers():
-    return {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": RAPIDAPI_HOST,
-    }
-
-
-def api_get(
-    session,
-    endpoint,
-    params=None,
-):
-    """
-    Make a GET request to RapidAPI.
-    """
-
-    url = (
-        f"{BASE_URL}/"
-        f"{endpoint.lstrip('/')}"
-    )
-
-    response = session.get(
-        url,
-        headers=api_headers(),
-        params=params or {},
-        timeout=120,
-    )
-
-    # --------------------------------------------------------
-    # Authentication
-    # --------------------------------------------------------
-
-    if response.status_code == 401:
-
-        raise RuntimeError(
-            "RapidAPI authentication failed. "
-            "Check RAPIDAPI_KEY."
-        )
-
-    # --------------------------------------------------------
-    # Subscription / permission
-    # --------------------------------------------------------
-
-    if response.status_code == 403:
-
-        raise RuntimeError(
-            "RapidAPI rejected the request. "
-            "Check your Instagram API subscription."
-        )
-
-    # --------------------------------------------------------
-    # Proxy/provider connection
-    # --------------------------------------------------------
-
-    if response.status_code == 407:
-
-        raise RuntimeError(
-            "RapidAPI returned HTTP 407. "
-            "The API provider/proxy connection "
-            "could not be established."
-        )
-
-    # --------------------------------------------------------
-    # Rate limit
-    # --------------------------------------------------------
-
-    if response.status_code == 429:
-
-        raise RuntimeError(
-            "RapidAPI rate limit exceeded."
-        )
-
-    response.raise_for_status()
-
-    # --------------------------------------------------------
-    # JSON
-    # --------------------------------------------------------
-
-    try:
-
-        return response.json()
-
-    except ValueError as exc:
-
-        raise RuntimeError(
-            "RapidAPI returned invalid JSON."
-        ) from exc
-
-
-# ============================================================
 # GENERIC JSON WALKER
 # ============================================================
 
 def walk(value):
     """
-    Recursively walk through dictionaries/lists.
-
-    This allows the downloader to work with slightly
-    different response envelopes from the API.
+    Recursively walk dictionaries/lists.
     """
 
     if isinstance(value, dict):
@@ -291,13 +182,9 @@ def walk(value):
             yield from walk(child)
 
 
-def first_value(
-    data,
-    keys,
-):
+def first_value(data, keys):
     """
-    Find the first non-empty value whose key matches
-    one of the requested keys.
+    Find first non-empty value matching one of the keys.
     """
 
     wanted = {
@@ -306,6 +193,9 @@ def first_value(
     }
 
     for obj in walk(data):
+
+        if not isinstance(obj, dict):
+            continue
 
         for key, value in obj.items():
 
@@ -324,83 +214,587 @@ def first_value(
 
 
 # ============================================================
-# MEDIA OBJECT SEARCH
+# API REQUEST
 # ============================================================
 
-def find_media_object(
-    data,
-    shortcode=None,
+def api_get(
+    session,
+    host,
+    key,
+    endpoint,
+    params=None,
+    timeout=120,
 ):
     """
-    Find the media object in the API response.
-
-    First attempts to match the shortcode.
-    Otherwise looks for an object containing media URLs.
+    Generic RapidAPI GET request.
     """
 
+    if not key:
+        raise APIError(
+            f"RapidAPI key is not configured for {host}."
+        )
+
+    url = (
+        f"https://{host}/"
+        f"{endpoint.lstrip('/')}"
+    )
+
+    headers = {
+        "x-rapidapi-key": key,
+        "x-rapidapi-host": host,
+        "accept": "application/json",
+    }
+
+    try:
+
+        response = session.get(
+            url,
+            headers=headers,
+            params=params or {},
+            timeout=timeout,
+        )
+
+    except requests.RequestException as exc:
+
+        raise APIError(
+            f"Request failed for {host}: {exc}"
+        ) from exc
+
+    if response.status_code == 401:
+
+        raise APIError(
+            f"{host}: HTTP 401 - authentication failed."
+        )
+
+    if response.status_code == 403:
+
+        raise APIError(
+            f"{host}: HTTP 403 - request rejected."
+        )
+
+    if response.status_code == 404:
+
+        raise APIError(
+            f"{host}: HTTP 404 - endpoint/content not found."
+        )
+
+    if response.status_code == 407:
+
+        raise APIError(
+            f"{host}: HTTP 407 - provider/proxy connection failed."
+        )
+
+    if response.status_code == 429:
+
+        raise APIError(
+            f"{host}: HTTP 429 - rate limit exceeded."
+        )
+
+    if not response.ok:
+
+        raise APIError(
+            f"{host}: HTTP {response.status_code}."
+        )
+
+    try:
+
+        return response.json()
+
+    except ValueError as exc:
+
+        raise APIError(
+            f"{host}: API returned invalid JSON."
+        ) from exc
+
+
+# ============================================================
+# PRIMARY API
+# ============================================================
+
+def primary_get_media_info(
+    session,
+    shortcode,
+):
+    """
+    Existing primary API.
+
+    Endpoint:
+        /media_info_v2
+
+    Parameter:
+        short_code
+    """
+
+    if not shortcode:
+        raise APIError(
+            "Instagram shortcode is missing."
+        )
+
+    return api_get(
+        session,
+        PRIMARY_API_HOST,
+        PRIMARY_API_KEY,
+        "/media_info_v2",
+        {
+            "short_code": shortcode,
+        },
+    )
+
+
+def primary_get_profile(
+    session,
+    username,
+):
+    """
+    Existing primary profile API.
+
+    Endpoint:
+        /user_info
+
+    Parameter:
+        user_name
+    """
+
+    return api_get(
+        session,
+        PRIMARY_API_HOST,
+        PRIMARY_API_KEY,
+        "/user_info",
+        {
+            "user_name": username,
+        },
+    )
+
+
+# ============================================================
+# BACKUP API - INSTAGRAM LOOTER
+# ============================================================
+
+def backup_get_download_link(
+    session,
+    instagram_url,
+):
+    """
+    Instagram Looter backup.
+
+    First:
+        GET /post-dl?url=<instagram_url>
+
+    If that doesn't return a usable URL:
+        GET /post?url=<instagram_url>
+    """
+
+    errors = []
+
     # --------------------------------------------------------
-    # First: match shortcode
+    # 1. Direct download endpoint
     # --------------------------------------------------------
 
-    if shortcode:
+    try:
 
-        target = shortcode.lower()
+        data = api_get(
+            session,
+            BACKUP_API_HOST,
+            BACKUP_API_KEY,
+            "/post-dl",
+            {
+                "url": instagram_url,
+            },
+        )
 
-        for obj in walk(data):
+        media_url = extract_media_url(
+            data
+        )
 
-            for key in (
-                "code",
-                "shortcode",
-                "short_code",
-                "media_code",
-            ):
+        if media_url:
 
-                value = obj.get(key)
+            return data, media_url
 
-                if (
-                    value is not None
-                    and str(value).lower() == target
-                ):
-                    return obj
+        errors.append(
+            "post-dl returned no usable media URL"
+        )
+
+    except Exception as exc:
+
+        errors.append(
+            f"post-dl: {exc}"
+        )
 
     # --------------------------------------------------------
-    # Second: look for obvious media objects
+    # 2. Media information endpoint
     # --------------------------------------------------------
 
-    candidates = []
+    try:
+
+        data = api_get(
+            session,
+            BACKUP_API_HOST,
+            BACKUP_API_KEY,
+            "/post",
+            {
+                "url": instagram_url,
+            },
+        )
+
+        media_url = extract_media_url(
+            data
+        )
+
+        if media_url:
+
+            return data, media_url
+
+        errors.append(
+            "post returned no usable media URL"
+        )
+
+    except Exception as exc:
+
+        errors.append(
+            f"post: {exc}"
+        )
+
+    raise APIError(
+        "Instagram Looter failed: "
+        + " | ".join(errors)
+    )
+
+
+def backup_get_profile(
+    session,
+    username,
+):
+    """
+    Instagram Looter profile fallback.
+
+    Endpoint:
+        /profile2
+
+    Parameter:
+        username
+    """
+
+    return api_get(
+        session,
+        BACKUP_API_HOST,
+        BACKUP_API_KEY,
+        "/profile2",
+        {
+            "username": username,
+        },
+    )
+
+
+# ============================================================
+# MEDIA URL EXTRACTION
+# ============================================================
+
+def is_http_url(value):
+    return (
+        isinstance(value, str)
+        and value.startswith(
+            (
+                "http://",
+                "https://",
+            )
+        )
+    )
+
+
+def extract_media_url(data):
+    """
+    Extract a media/download URL from the various
+    possible Instagram Looter response structures.
+    """
+
+    if not data:
+        return None
+
+    # --------------------------------------------------------
+    # Most likely direct download fields
+    # --------------------------------------------------------
+
+    direct_keys = (
+        "download_url",
+        "download_link",
+        "media_url",
+        "video_url",
+        "image_url",
+        "file_url",
+        "url",
+        "src",
+        "play_url",
+        "playable_url",
+        "direct_url",
+        "video",
+        "image",
+    )
+
+    # --------------------------------------------------------
+    # First pass:
+    # Prefer explicit download/media fields.
+    # --------------------------------------------------------
 
     for obj in walk(data):
 
         if not isinstance(obj, dict):
             continue
 
-        if (
-            best_video_url(obj)
-            or best_image_url(obj)
-        ):
-            candidates.append(obj)
+        for key in direct_keys:
 
-    if candidates:
-        return candidates[0]
+            value = obj.get(key)
+
+            if is_http_url(value):
+
+                # Don't accidentally return the
+                # original Instagram page URL.
+                if "instagram.com" in value.lower():
+
+                    path = urlparse(value).path.lower()
+
+                    if (
+                        "/p/" in path
+                        or "/reel/" in path
+                        or "/reels/" in path
+                        or "/tv/" in path
+                    ):
+                        continue
+
+                return value
+
+    # --------------------------------------------------------
+    # video_versions
+    # --------------------------------------------------------
+
+    for obj in walk(data):
+
+        if not isinstance(obj, dict):
+            continue
+
+        for key in (
+            "video_versions",
+            "video_versions2",
+            "videos",
+        ):
+
+            versions = obj.get(key)
+
+            if not isinstance(
+                versions,
+                list,
+            ):
+                continue
+
+            candidates = []
+
+            for item in versions:
+
+                if not isinstance(
+                    item,
+                    dict,
+                ):
+                    continue
+
+                value = (
+                    item.get("url")
+                    or item.get("src")
+                    or item.get("video_url")
+                )
+
+                if not is_http_url(value):
+                    continue
+
+                width = item.get(
+                    "width"
+                ) or 0
+
+                height = item.get(
+                    "height"
+                ) or 0
+
+                try:
+
+                    area = (
+                        int(width)
+                        * int(height)
+                    )
+
+                except Exception:
+
+                    area = 0
+
+                candidates.append(
+                    (
+                        area,
+                        value,
+                    )
+                )
+
+            if candidates:
+
+                candidates.sort(
+                    key=lambda x: x[0],
+                    reverse=True,
+                )
+
+                return candidates[0][1]
+
+    # --------------------------------------------------------
+    # image_versions2
+    # --------------------------------------------------------
+
+    for obj in walk(data):
+
+        if not isinstance(obj, dict):
+            continue
+
+        versions = obj.get(
+            "image_versions2"
+        )
+
+        if not isinstance(
+            versions,
+            dict,
+        ):
+            continue
+
+        candidates = versions.get(
+            "candidates"
+        )
+
+        if not isinstance(
+            candidates,
+            list,
+        ):
+            continue
+
+        best = None
+        best_area = -1
+
+        for item in candidates:
+
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            value = item.get(
+                "url"
+            )
+
+            if not is_http_url(value):
+                continue
+
+            width = item.get(
+                "width"
+            ) or 0
+
+            height = item.get(
+                "height"
+            ) or 0
+
+            try:
+
+                area = (
+                    int(width)
+                    * int(height)
+                )
+
+            except Exception:
+
+                area = 0
+
+            if area > best_area:
+
+                best_area = area
+                best = value
+
+        if best:
+            return best
+
+    # --------------------------------------------------------
+    # display_resources
+    # --------------------------------------------------------
+
+    for obj in walk(data):
+
+        if not isinstance(obj, dict):
+            continue
+
+        resources = obj.get(
+            "display_resources"
+        )
+
+        if not isinstance(
+            resources,
+            list,
+        ):
+            continue
+
+        candidates = []
+
+        for item in resources:
+
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            value = (
+                item.get("src")
+                or item.get("url")
+            )
+
+            if not is_http_url(value):
+                continue
+
+            width = item.get(
+                "config_width"
+            ) or 0
+
+            height = item.get(
+                "config_height"
+            ) or 0
+
+            try:
+
+                area = (
+                    int(width)
+                    * int(height)
+                )
+
+            except Exception:
+
+                area = 0
+
+            candidates.append(
+                (
+                    area,
+                    value,
+                )
+            )
+
+        if candidates:
+
+            candidates.sort(
+                key=lambda x: x[0],
+                reverse=True,
+            )
+
+            return candidates[0][1]
 
     return None
 
 
 # ============================================================
-# VIDEO URL EXTRACTION
+# PRIMARY RESPONSE MEDIA OBJECT
 # ============================================================
 
 def best_video_url(obj):
-    """
-    Find the best available video URL.
-    """
-
     if not isinstance(obj, dict):
         return None
-
-    # --------------------------------------------------------
-    # Direct URL fields
-    # --------------------------------------------------------
 
     for key in (
         "video_url",
@@ -413,15 +807,8 @@ def best_video_url(obj):
 
         value = obj.get(key)
 
-        if (
-            isinstance(value, str)
-            and value.startswith("http")
-        ):
+        if is_http_url(value):
             return value
-
-    # --------------------------------------------------------
-    # Common video version structures
-    # --------------------------------------------------------
 
     for key in (
         "video_versions",
@@ -431,94 +818,72 @@ def best_video_url(obj):
 
         versions = obj.get(key)
 
-        if not isinstance(versions, list):
+        if not isinstance(
+            versions,
+            list,
+        ):
             continue
 
         candidates = []
 
         for item in versions:
 
-            if not isinstance(item, dict):
+            if not isinstance(
+                item,
+                dict,
+            ):
                 continue
 
-            url = (
+            value = (
                 item.get("url")
                 or item.get("src")
                 or item.get("video_url")
             )
 
-            if (
-                not isinstance(url, str)
-                or not url.startswith("http")
-            ):
+            if not is_http_url(value):
                 continue
 
-            width = item.get("width") or 0
-            height = item.get("height") or 0
+            width = item.get(
+                "width"
+            ) or 0
+
+            height = item.get(
+                "height"
+            ) or 0
 
             try:
-                area = int(width) * int(height)
+
+                area = (
+                    int(width)
+                    * int(height)
+                )
 
             except Exception:
+
                 area = 0
 
             candidates.append(
                 (
                     area,
-                    url,
+                    value,
                 )
             )
 
         if candidates:
 
             candidates.sort(
-                key=lambda item: item[0],
+                key=lambda x: x[0],
                 reverse=True,
             )
 
             return candidates[0][1]
 
-    # --------------------------------------------------------
-    # Nested search
-    # --------------------------------------------------------
-
-    for nested in walk(obj):
-
-        if nested is obj:
-            continue
-
-        for key in (
-            "video_url",
-            "play_url",
-            "download_url",
-        ):
-
-            value = nested.get(key)
-
-            if (
-                isinstance(value, str)
-                and value.startswith("http")
-            ):
-                return value
-
     return None
 
 
-# ============================================================
-# IMAGE URL EXTRACTION
-# ============================================================
-
 def best_image_url(obj):
-    """
-    Find the best available image URL.
-    """
-
     if not isinstance(obj, dict):
         return None
-
-    # --------------------------------------------------------
-    # Direct image fields
-    # --------------------------------------------------------
 
     for key in (
         "profile_pic_url_hd",
@@ -534,157 +899,216 @@ def best_image_url(obj):
 
         value = obj.get(key)
 
-        if (
-            isinstance(value, str)
-            and value.startswith("http")
-        ):
+        if is_http_url(value):
             return value
-
-    # --------------------------------------------------------
-    # image_versions2
-    # --------------------------------------------------------
 
     versions = obj.get(
         "image_versions2"
     )
 
-    if isinstance(versions, dict):
+    if isinstance(
+        versions,
+        dict,
+    ):
 
         candidates = versions.get(
             "candidates"
         )
 
-        if isinstance(candidates, list):
+        if isinstance(
+            candidates,
+            list,
+        ):
 
             best = None
             best_area = -1
 
             for item in candidates:
 
-                if not isinstance(item, dict):
-                    continue
-
-                url = item.get("url")
-
-                if (
-                    not isinstance(url, str)
-                    or not url.startswith("http")
+                if not isinstance(
+                    item,
+                    dict,
                 ):
                     continue
 
-                width = item.get("width") or 0
-                height = item.get("height") or 0
+                value = item.get(
+                    "url"
+                )
+
+                if not is_http_url(value):
+                    continue
+
+                width = item.get(
+                    "width"
+                ) or 0
+
+                height = item.get(
+                    "height"
+                ) or 0
 
                 try:
+
                     area = (
                         int(width)
                         * int(height)
                     )
 
                 except Exception:
+
                     area = 0
 
                 if area > best_area:
 
                     best_area = area
-                    best = url
+                    best = value
 
             if best:
                 return best
 
-    # --------------------------------------------------------
-    # display_resources
-    # --------------------------------------------------------
+    return None
 
-    resources = obj.get(
-        "display_resources"
-    )
 
-    if isinstance(resources, list):
+def find_media_object(
+    data,
+    shortcode=None,
+):
+    """
+    Find media object in primary API response.
+    """
 
-        candidates = []
+    if shortcode:
 
-        for item in resources:
+        target = shortcode.lower()
 
-            if not isinstance(item, dict):
-                continue
+        for obj in walk(data):
 
-            url = item.get(
-                "src"
-            ) or item.get(
-                "url"
-            )
-
-            if (
-                not isinstance(url, str)
-                or not url.startswith("http")
+            if not isinstance(
+                obj,
+                dict,
             ):
                 continue
 
-            width = item.get("config_width") or 0
-            height = item.get("config_height") or 0
+            for key in (
+                "code",
+                "shortcode",
+                "short_code",
+                "media_code",
+            ):
 
-            try:
-                area = (
-                    int(width)
-                    * int(height)
-                )
+                value = obj.get(key)
 
-            except Exception:
-                area = 0
+                if (
+                    value is not None
+                    and str(value).lower()
+                    == target
+                ):
+                    return obj
 
-            candidates.append(
-                (
-                    area,
-                    url,
-                )
-            )
+    candidates = []
 
-        if candidates:
+    for obj in walk(data):
 
-            candidates.sort(
-                key=lambda item: item[0],
-                reverse=True,
-            )
+        if not isinstance(
+            obj,
+            dict,
+        ):
+            continue
 
-            return candidates[0][1]
+        if (
+            best_video_url(obj)
+            or best_image_url(obj)
+        ):
+            candidates.append(obj)
+
+    if candidates:
+        return candidates[0]
 
     return None
 
 
 # ============================================================
-# MEDIA URL + TYPE
+# CAROUSEL
 # ============================================================
 
-def media_url_and_type(obj):
-    """
-    Prefer video when both video and image are available.
-    """
+def get_carousel_items(media):
+    if not isinstance(
+        media,
+        dict,
+    ):
+        return []
 
-    video = best_video_url(obj)
+    possible_keys = (
+        "carousel_media",
+        "carousel",
+        "items",
+        "children",
+        "edge_sidecar_to_children",
+    )
 
-    if video:
-        return video, ".mp4"
+    for key in possible_keys:
 
-    image = best_image_url(obj)
+        value = media.get(key)
 
-    if image:
-        return image, ".jpg"
+        if isinstance(
+            value,
+            list,
+        ):
+            return value
 
-    return None, None
+        if isinstance(
+            value,
+            dict,
+        ):
+
+            edges = value.get(
+                "edges"
+            )
+
+            if isinstance(
+                edges,
+                list,
+            ):
+
+                items = []
+
+                for edge in edges:
+
+                    if not isinstance(
+                        edge,
+                        dict,
+                    ):
+                        continue
+
+                    node = edge.get(
+                        "node"
+                    )
+
+                    if isinstance(
+                        node,
+                        dict,
+                    ):
+                        items.append(node)
+
+                if items:
+                    return items
+
+    return []
 
 
 # ============================================================
-# FILE DOWNLOAD
+# DOWNLOAD REMOTE FILE
 # ============================================================
 
 def download_file(
     session,
     url,
-    filename,
+    filename=None,
 ):
     """
-    Download a remote media URL to disk.
+    Download remote media.
+
+    If filename is not provided, determine extension
+    from Content-Type / URL.
     """
 
     response = session.get(
@@ -704,6 +1128,39 @@ def download_file(
 
     response.raise_for_status()
 
+    content_type = (
+        response.headers.get(
+            "content-type",
+            ""
+        ).lower()
+    )
+
+    if filename is None:
+
+        if "video" in content_type:
+
+            extension = ".mp4"
+
+        elif "png" in content_type:
+
+            extension = ".png"
+
+        elif "webp" in content_type:
+
+            extension = ".webp"
+
+        elif "gif" in content_type:
+
+            extension = ".gif"
+
+        else:
+
+            extension = ".jpg"
+
+        filename = tempfile.mktemp(
+            suffix=extension
+        )
+
     with open(
         filename,
         "wb",
@@ -716,52 +1173,271 @@ def download_file(
             if chunk:
                 file.write(chunk)
 
+    return filename
+
 
 # ============================================================
-# PROFILE PICTURE
+# DOWNLOAD MEDIA FROM PRIMARY API
 # ============================================================
 
-def download_profile(
+def download_primary_media(
     session,
     url,
     temp_dir,
 ):
     """
-    Download Instagram profile picture.
-
-    API:
-        GET /user_info
-        user_name=<username>
+    Download using the current primary API.
     """
 
-    username = extract_username(url)
+    shortcode = extract_shortcode(url)
 
-    if not username:
+    if not shortcode:
+        raise APIError(
+            "Could not extract Instagram shortcode."
+        )
 
-        raise RuntimeError(
-            "Invalid Instagram profile URL."
+    data = primary_get_media_info(
+        session,
+        shortcode,
+    )
+
+    media = find_media_object(
+        data,
+        shortcode,
+    )
+
+    if media is None:
+
+        raise APIError(
+            "Primary API returned no media object."
         )
 
     # --------------------------------------------------------
-    # IMPORTANT:
-    # The API screenshot shows:
-    #
-    # user_name *
-    #
-    # NOT username.
+    # Carousel
     # --------------------------------------------------------
 
-    data = api_get(
+    carousel = get_carousel_items(
+        media
+    )
+
+    if carousel:
+
+        files = []
+
+        for index, item in enumerate(
+            carousel,
+            start=1,
+        ):
+
+            video = best_video_url(
+                item
+            )
+
+            image = best_image_url(
+                item
+            )
+
+            media_url = (
+                video
+                or image
+            )
+
+            if not media_url:
+                continue
+
+            extension = (
+                ".mp4"
+                if video
+                else ".jpg"
+            )
+
+            filename = os.path.join(
+                temp_dir,
+                f"{shortcode}_{index}{extension}",
+            )
+
+            download_file(
+                session,
+                media_url,
+                filename,
+            )
+
+            files.append(
+                filename
+            )
+
+        if files:
+            return files
+
+    # --------------------------------------------------------
+    # Single media
+    # --------------------------------------------------------
+
+    video = best_video_url(
+        media
+    )
+
+    image = best_image_url(
+        media
+    )
+
+    media_url = (
+        video
+        or image
+    )
+
+    if not media_url:
+
+        raise APIError(
+            "Primary API returned no downloadable media URL."
+        )
+
+    extension = (
+        ".mp4"
+        if video
+        else ".jpg"
+    )
+
+    filename = os.path.join(
+        temp_dir,
+        f"{shortcode}{extension}",
+    )
+
+    download_file(
         session,
-        "/user_info",
-        {
-            "user_name": username,
-        },
+        media_url,
+        filename,
+    )
+
+    return [filename]
+
+
+# ============================================================
+# DOWNLOAD MEDIA FROM BACKUP API
+# ============================================================
+
+def download_backup_media(
+    session,
+    url,
+    temp_dir,
+):
+    """
+    Instagram Looter fallback.
+
+    Priority:
+
+        /post-dl
+            ↓
+        /post
+    """
+
+    data, media_url = (
+        backup_get_download_link(
+            session,
+            url,
+        )
     )
 
     # --------------------------------------------------------
-    # Try HD profile picture first
+    # Download direct media URL
     # --------------------------------------------------------
+
+    shortcode = (
+        extract_shortcode(url)
+        or "instagram"
+    )
+
+    # We don't force .mp4/.jpg here.
+    # Content-Type determines it.
+    temp_file = os.path.join(
+        temp_dir,
+        f"{shortcode}_backup",
+    )
+
+    downloaded = download_file(
+        session,
+        media_url,
+        temp_file,
+    )
+
+    # --------------------------------------------------------
+    # Rename according to actual content type
+    # --------------------------------------------------------
+
+    content_type = ""
+
+    try:
+
+        response = session.head(
+            media_url,
+            timeout=30,
+            allow_redirects=True,
+        )
+
+        content_type = (
+            response.headers.get(
+                "content-type",
+                ""
+            ).lower()
+        )
+
+    except Exception:
+        pass
+
+    if not os.path.splitext(
+        downloaded
+    )[1]:
+
+        if "video" in content_type:
+
+            new_path = downloaded + ".mp4"
+
+        elif "png" in content_type:
+
+            new_path = downloaded + ".png"
+
+        elif "webp" in content_type:
+
+            new_path = downloaded + ".webp"
+
+        elif "gif" in content_type:
+
+            new_path = downloaded + ".gif"
+
+        else:
+
+            new_path = downloaded + ".jpg"
+
+        os.rename(
+            downloaded,
+            new_path,
+        )
+
+        downloaded = new_path
+
+    return [downloaded]
+
+
+# ============================================================
+# PROFILE - PRIMARY
+# ============================================================
+
+def download_primary_profile(
+    session,
+    url,
+    temp_dir,
+):
+    username = extract_username(url)
+
+    if not username:
+        raise APIError(
+            "Invalid Instagram profile URL."
+        )
+
+    data = primary_get_profile(
+        session,
+        username,
+    )
 
     image_url = first_value(
         data,
@@ -772,13 +1448,8 @@ def download_profile(
         ),
     )
 
-    # --------------------------------------------------------
-    # Fallback to generic image extraction
-    # --------------------------------------------------------
-
-    if (
-        not isinstance(image_url, str)
-        or not image_url.startswith("http")
+    if not is_http_url(
+        image_url
     ):
 
         image_url = best_image_url(
@@ -787,9 +1458,8 @@ def download_profile(
 
     if not image_url:
 
-        raise RuntimeError(
-            "Profile picture was not found "
-            "in the UserInfo response."
+        raise APIError(
+            "Primary API returned no profile picture."
         )
 
     safe_username = re.sub(
@@ -813,228 +1483,66 @@ def download_profile(
 
 
 # ============================================================
-# MEDIA INFO
+# PROFILE - BACKUP
 # ============================================================
 
-def get_media_info(
-    session,
-    shortcode,
-):
-    """
-    Get information about a single Instagram
-    post/reel.
-
-    API screenshot confirms:
-
-        GET MediaInfo_v2
-
-        short_code *
-    """
-
-    if not shortcode:
-
-        raise RuntimeError(
-            "Instagram shortcode is missing."
-        )
-
-    # IMPORTANT:
-    # Exact parameter from your API screenshot:
-    #
-    # short_code
-    #
-    # NOT:
-    # code
-    # shortcode
-
-    return api_get(
-        session,
-        "/media_info_v2",
-        {
-            "short_code": shortcode,
-        },
-    )
-
-
-# ============================================================
-# CAROUSEL MEDIA
-# ============================================================
-
-def get_carousel_items(media):
-    """
-    Extract carousel items from several common
-    Instagram response formats.
-    """
-
-    if not isinstance(media, dict):
-        return []
-
-    possible_keys = (
-        "carousel_media",
-        "carousel",
-        "items",
-        "children",
-        "edge_sidecar_to_children",
-    )
-
-    for key in possible_keys:
-
-        value = media.get(key)
-
-        # Direct list
-        if isinstance(value, list):
-            return value
-
-        # GraphQL-style:
-        #
-        # {
-        #   "edges": [
-        #       {"node": {...}}
-        #   ]
-        # }
-        if isinstance(value, dict):
-
-            edges = value.get(
-                "edges"
-            )
-
-            if isinstance(edges, list):
-
-                items = []
-
-                for edge in edges:
-
-                    if not isinstance(edge, dict):
-                        continue
-
-                    node = edge.get(
-                        "node"
-                    )
-
-                    if isinstance(node, dict):
-                        items.append(node)
-
-                if items:
-                    return items
-
-    return []
-
-
-# ============================================================
-# DOWNLOAD POST / REEL
-# ============================================================
-
-def download_media(
+def download_backup_profile(
     session,
     url,
     temp_dir,
 ):
-    """
-    Download a single Instagram post or Reel.
+    username = extract_username(url)
 
-    Uses:
-        /media_info_v2
-        short_code=<shortcode>
-    """
-
-    shortcode = extract_shortcode(url)
-
-    if not shortcode:
-
-        raise RuntimeError(
-            "Could not extract Instagram shortcode "
-            "from the URL."
+    if not username:
+        raise APIError(
+            "Invalid Instagram profile URL."
         )
 
-    # --------------------------------------------------------
-    # API request
-    # --------------------------------------------------------
-
-    data = get_media_info(
+    data = backup_get_profile(
         session,
-        shortcode,
+        username,
     )
 
-    # --------------------------------------------------------
-    # Locate media object
-    # --------------------------------------------------------
-
-    media = find_media_object(
+    image_url = first_value(
         data,
-        shortcode,
+        (
+            "profile_pic_url_hd",
+            "hd_profile_pic_url",
+            "profile_pic_url",
+            "profile_pic",
+            "image_url",
+            "profile_picture",
+        ),
     )
 
-    if media is None:
+    if not is_http_url(
+        image_url
+    ):
 
-        raise RuntimeError(
-            "Media information was not found "
-            "in the API response."
+        image_url = best_image_url(
+            data
         )
 
-    # ========================================================
-    # CAROUSEL
-    # ========================================================
+    if not image_url:
 
-    carousel = get_carousel_items(
-        media
-    )
-
-    if carousel:
-
-        files = []
-
-        for index, item in enumerate(
-            carousel,
-            start=1,
-        ):
-
-            media_url, extension = (
-                media_url_and_type(item)
-            )
-
-            if not media_url:
-                continue
-
-            filename = os.path.join(
-                temp_dir,
-                f"{shortcode}_{index}{extension}",
-            )
-
-            download_file(
-                session,
-                media_url,
-                filename,
-            )
-
-            files.append(
-                filename
-            )
-
-        if files:
-            return files
-
-    # ========================================================
-    # SINGLE MEDIA
-    # ========================================================
-
-    media_url, extension = (
-        media_url_and_type(media)
-    )
-
-    if not media_url:
-
-        raise RuntimeError(
-            "No downloadable media URL was returned "
-            "by MediaInfo_v2."
+        raise APIError(
+            "Instagram Looter returned no profile picture."
         )
+
+    safe_username = re.sub(
+        r"[^A-Za-z0-9_.-]",
+        "_",
+        username,
+    )
 
     filename = os.path.join(
         temp_dir,
-        f"{shortcode}{extension}",
+        f"{safe_username}_profile.jpg",
     )
 
     download_file(
         session,
-        media_url,
+        image_url,
         filename,
     )
 
@@ -1042,7 +1550,7 @@ def download_media(
 
 
 # ============================================================
-# YT-DLP FALLBACK
+# YT-DLP FINAL FALLBACK
 # ============================================================
 
 def download_with_ytdlp(
@@ -1050,10 +1558,7 @@ def download_with_ytdlp(
     temp_dir,
 ):
     """
-    Fallback downloader.
-
-    Used if RapidAPI does not return a usable
-    media URL.
+    Final fallback after both RapidAPI providers fail.
     """
 
     try:
@@ -1093,10 +1598,6 @@ def download_with_ytdlp(
 
         files = []
 
-        # ----------------------------------------------------
-        # requested_downloads
-        # ----------------------------------------------------
-
         requested = (
             info.get(
                 "requested_downloads"
@@ -1115,10 +1616,6 @@ def download_with_ytdlp(
                 and os.path.isfile(path)
             ):
                 files.append(path)
-
-        # ----------------------------------------------------
-        # Normal output path
-        # ----------------------------------------------------
 
         if not files:
 
@@ -1142,23 +1639,35 @@ def download_with_ytdlp(
 # MAIN DOWNLOAD FUNCTION
 # ============================================================
 
-def download_instagram(
-    url,
-):
+def download_instagram(url):
     """
     Main entry point used by messages.py.
 
-    Supported:
+    Download order:
 
-        Instagram Reel
-        Instagram post
-        Instagram video
-        Instagram image
-        Instagram carousel
-        Instagram profile picture
+        PROFILE:
+            Primary API
+                ↓
+            Instagram Looter
+                ↓
+            error
+
+        MEDIA:
+            Primary API
+                ↓
+            Instagram Looter /post-dl
+                ↓
+            Instagram Looter /post
+                ↓
+            yt-dlp
+                ↓
+            error
     """
 
-    if not isinstance(url, str):
+    if not isinstance(
+        url,
+        str,
+    ):
         raise RuntimeError(
             "Invalid Instagram URL."
         )
@@ -1177,69 +1686,113 @@ def download_instagram(
 
     session = requests.Session()
 
+    primary_error = None
+    backup_error = None
+
     try:
 
         # ====================================================
-        # PROFILE PICTURE
+        # PROFILE
         # ====================================================
 
         if is_profile_url(url):
 
+            # ------------------------------------------------
+            # PRIMARY
+            # ------------------------------------------------
+
             try:
 
-                return download_profile(
+                return download_primary_profile(
                     session,
                     url,
                     temp_dir,
                 )
 
-            except Exception:
+            except Exception as exc:
 
-                # Profile picture fallback through
-                # yt-dlp is generally not useful, so
-                # preserve the original API error.
-                raise
+                primary_error = exc
+
+            # ------------------------------------------------
+            # BACKUP
+            # ------------------------------------------------
+
+            try:
+
+                return download_backup_profile(
+                    session,
+                    url,
+                    temp_dir,
+                )
+
+            except Exception as exc:
+
+                backup_error = exc
+
+            raise RuntimeError(
+                "Profile download failed. "
+                f"Primary API: {primary_error}. "
+                f"Backup API: {backup_error}."
+            )
 
         # ====================================================
-        # POST / REEL
+        # MEDIA
         # ====================================================
+
+        # ----------------------------------------------------
+        # 1. PRIMARY API
+        # ----------------------------------------------------
 
         try:
 
-            return download_media(
+            return download_primary_media(
                 session,
                 url,
                 temp_dir,
             )
 
-        except Exception as rapidapi_error:
+        except Exception as exc:
 
-            # ------------------------------------------------
-            # Try yt-dlp fallback.
-            #
-            # Do not hide RapidAPI errors such as 401,
-            # 403, 407 or 429 if yt-dlp also fails.
-            # ------------------------------------------------
+            primary_error = exc
 
-            try:
+        # ----------------------------------------------------
+        # 2. INSTAGRAM LOOTER BACKUP
+        # ----------------------------------------------------
 
-                return download_with_ytdlp(
-                    url,
-                    temp_dir,
-                )
+        try:
 
-            except Exception as ytdlp_error:
+            return download_backup_media(
+                session,
+                url,
+                temp_dir,
+            )
 
-                raise RuntimeError(
-                    "RapidAPI download failed: "
-                    f"{rapidapi_error}. "
-                    "yt-dlp fallback also failed: "
-                    f"{ytdlp_error}"
-                ) from rapidapi_error
+        except Exception as exc:
+
+            backup_error = exc
+
+        # ----------------------------------------------------
+        # 3. FINAL YT-DLP FALLBACK
+        # ----------------------------------------------------
+
+        try:
+
+            return download_with_ytdlp(
+                url,
+                temp_dir,
+            )
+
+        except Exception as ytdlp_error:
+
+            raise RuntimeError(
+                "All Instagram download methods failed.\n\n"
+                f"Primary API: {primary_error}\n"
+                f"Backup API: {backup_error}\n"
+                f"yt-dlp: {ytdlp_error}"
+            ) from primary_error
 
     except Exception:
 
-        # Remove temporary directory on failure.
         shutil.rmtree(
             temp_dir,
             ignore_errors=True,
