@@ -20,8 +20,21 @@ RAPIDAPI_HOST = os.getenv(
 
 BASE_URL = f"https://{RAPIDAPI_HOST}"
 
-VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".webm", ".mkv"}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".m4v",
+    ".mov",
+    ".webm",
+    ".mkv",
+}
+
+IMAGE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+}
 
 
 # ============================================================
@@ -29,6 +42,10 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 # ============================================================
 
 def instagram_parts(url: str):
+    """
+    Return the path components of an Instagram URL.
+    """
+
     return [
         part
         for part in urlparse(url).path.strip("/").split("/")
@@ -37,19 +54,47 @@ def instagram_parts(url: str):
 
 
 def extract_shortcode(url: str):
-    parts = [p.lower() for p in instagram_parts(url)]
+    """
+    Extract shortcode from:
+        /reel/ABC123/
+        /reels/ABC123/
+        /p/ABC123/
+        /tv/ABC123/
+    """
 
-    for marker in ("reel", "reels", "p", "tv"):
-        if marker in parts:
-            index = parts.index(marker)
+    parts = instagram_parts(url)
+
+    lower_parts = [
+        part.lower()
+        for part in parts
+    ]
+
+    for marker in (
+        "reel",
+        "reels",
+        "p",
+        "tv",
+    ):
+
+        if marker in lower_parts:
+
+            index = lower_parts.index(marker)
 
             if index + 1 < len(parts):
-                return instagram_parts(url)[index + 1]
+                return parts[index + 1]
 
     return None
 
 
 def extract_username(url: str):
+    """
+    Extract username from a profile URL.
+
+    Example:
+        https://www.instagram.com/instagram/
+        -> instagram
+    """
+
     parts = instagram_parts(url)
 
     if not parts:
@@ -69,14 +114,19 @@ def extract_username(url: str):
         "web",
     }
 
-    if parts[0].lower() in reserved:
+    username = parts[0]
+
+    if username.lower() in reserved:
         return None
 
-    return parts[0]
+    return username
 
 
 def is_reel_url(url: str):
-    parts = [p.lower() for p in instagram_parts(url)]
+    parts = [
+        part.lower()
+        for part in instagram_parts(url)
+    ]
 
     return (
         "reel" in parts
@@ -85,7 +135,10 @@ def is_reel_url(url: str):
 
 
 def is_post_url(url: str):
-    parts = [p.lower() for p in instagram_parts(url)]
+    parts = [
+        part.lower()
+        for part in instagram_parts(url)
+    ]
 
     return (
         "p" in parts
@@ -94,6 +147,10 @@ def is_post_url(url: str):
 
 
 def is_profile_url(url: str):
+    """
+    Determine whether the URL is a simple profile URL.
+    """
+
     parts = instagram_parts(url)
 
     if len(parts) != 1:
@@ -127,56 +184,98 @@ def api_headers():
     }
 
 
-def api_get(session, endpoint, params=None):
+def api_get(
+    session,
+    endpoint,
+    params=None,
+):
+    """
+    Make a GET request to RapidAPI.
+    """
+
+    url = (
+        f"{BASE_URL}/"
+        f"{endpoint.lstrip('/')}"
+    )
+
     response = session.get(
-        f"{BASE_URL}/{endpoint.lstrip('/')}",
+        url,
         headers=api_headers(),
         params=params or {},
         timeout=120,
     )
 
+    # --------------------------------------------------------
+    # Authentication
+    # --------------------------------------------------------
+
     if response.status_code == 401:
+
         raise RuntimeError(
             "RapidAPI authentication failed. "
             "Check RAPIDAPI_KEY."
         )
 
+    # --------------------------------------------------------
+    # Subscription / permission
+    # --------------------------------------------------------
+
     if response.status_code == 403:
+
         raise RuntimeError(
             "RapidAPI rejected the request. "
-            "Check the API subscription."
+            "Check your Instagram API subscription."
         )
 
+    # --------------------------------------------------------
+    # Proxy/provider connection
+    # --------------------------------------------------------
+
     if response.status_code == 407:
+
         raise RuntimeError(
             "RapidAPI returned HTTP 407. "
             "The API provider/proxy connection "
             "could not be established."
         )
 
+    # --------------------------------------------------------
+    # Rate limit
+    # --------------------------------------------------------
+
     if response.status_code == 429:
+
         raise RuntimeError(
             "RapidAPI rate limit exceeded."
         )
 
     response.raise_for_status()
 
+    # --------------------------------------------------------
+    # JSON
+    # --------------------------------------------------------
+
     try:
+
         return response.json()
 
     except ValueError as exc:
+
         raise RuntimeError(
             "RapidAPI returned invalid JSON."
         ) from exc
 
 
 # ============================================================
-# JSON SEARCH HELPERS
+# GENERIC JSON WALKER
 # ============================================================
 
 def walk(value):
     """
-    Recursively walk through dictionaries and lists.
+    Recursively walk through dictionaries/lists.
+
+    This allows the downloader to work with slightly
+    different response envelopes from the API.
     """
 
     if isinstance(value, dict):
@@ -192,13 +291,16 @@ def walk(value):
             yield from walk(child)
 
 
-def first_value(data, keys):
+def first_value(
+    data,
+    keys,
+):
     """
-    Find the first value whose key matches one of
-    the requested keys.
+    Find the first non-empty value whose key matches
+    one of the requested keys.
     """
 
-    keys = {
+    wanted = {
         key.lower()
         for key in keys
     }
@@ -208,7 +310,7 @@ def first_value(data, keys):
         for key, value in obj.items():
 
             if (
-                key.lower() in keys
+                key.lower() in wanted
                 and value not in (
                     None,
                     "",
@@ -221,69 +323,92 @@ def first_value(data, keys):
     return None
 
 
-def find_shortcode_object(data, shortcode):
+# ============================================================
+# MEDIA OBJECT SEARCH
+# ============================================================
+
+def find_media_object(
+    data,
+    shortcode=None,
+):
     """
-    Find the media object matching the Instagram shortcode.
+    Find the media object in the API response.
+
+    First attempts to match the shortcode.
+    Otherwise looks for an object containing media URLs.
     """
 
-    if not shortcode:
-        return None
+    # --------------------------------------------------------
+    # First: match shortcode
+    # --------------------------------------------------------
 
-    target = str(shortcode).lower()
+    if shortcode:
+
+        target = shortcode.lower()
+
+        for obj in walk(data):
+
+            for key in (
+                "code",
+                "shortcode",
+                "short_code",
+                "media_code",
+            ):
+
+                value = obj.get(key)
+
+                if (
+                    value is not None
+                    and str(value).lower() == target
+                ):
+                    return obj
+
+    # --------------------------------------------------------
+    # Second: look for obvious media objects
+    # --------------------------------------------------------
+
+    candidates = []
 
     for obj in walk(data):
 
-        for key in (
-            "code",
-            "shortcode",
-            "short_code",
-            "media_code",
+        if not isinstance(obj, dict):
+            continue
+
+        if (
+            best_video_url(obj)
+            or best_image_url(obj)
         ):
+            candidates.append(obj)
 
-            value = obj.get(key)
-
-            if (
-                value
-                and str(value).lower() == target
-            ):
-                return obj
-
-        for key in (
-            "url",
-            "link",
-            "permalink",
-            "web_url",
-        ):
-
-            value = obj.get(key)
-
-            if (
-                isinstance(value, str)
-                and target in value.lower()
-            ):
-                return obj
+    if candidates:
+        return candidates[0]
 
     return None
 
 
 # ============================================================
-# MEDIA URL EXTRACTION
+# VIDEO URL EXTRACTION
 # ============================================================
 
 def best_video_url(obj):
     """
-    Return the best available video URL.
+    Find the best available video URL.
     """
 
     if not isinstance(obj, dict):
         return None
 
-    # Direct video URL fields.
+    # --------------------------------------------------------
+    # Direct URL fields
+    # --------------------------------------------------------
+
     for key in (
         "video_url",
         "video_url_hd",
+        "video_url_standard",
         "play_url",
         "download_url",
+        "video",
     ):
 
         value = obj.get(key)
@@ -294,7 +419,10 @@ def best_video_url(obj):
         ):
             return value
 
-    # Instagram-style video_versions.
+    # --------------------------------------------------------
+    # Common video version structures
+    # --------------------------------------------------------
+
     for key in (
         "video_versions",
         "video_versions2",
@@ -316,6 +444,7 @@ def best_video_url(obj):
             url = (
                 item.get("url")
                 or item.get("src")
+                or item.get("video_url")
             )
 
             if (
@@ -327,9 +456,15 @@ def best_video_url(obj):
             width = item.get("width") or 0
             height = item.get("height") or 0
 
+            try:
+                area = int(width) * int(height)
+
+            except Exception:
+                area = 0
+
             candidates.append(
                 (
-                    width * height,
+                    area,
                     url,
                 )
             )
@@ -337,12 +472,16 @@ def best_video_url(obj):
         if candidates:
 
             candidates.sort(
-                reverse=True
+                key=lambda item: item[0],
+                reverse=True,
             )
 
             return candidates[0][1]
 
-    # Search nested dictionaries.
+    # --------------------------------------------------------
+    # Nested search
+    # --------------------------------------------------------
+
     for nested in walk(obj):
 
         if nested is obj:
@@ -365,20 +504,32 @@ def best_video_url(obj):
     return None
 
 
+# ============================================================
+# IMAGE URL EXTRACTION
+# ============================================================
+
 def best_image_url(obj):
     """
-    Return the best available image URL.
+    Find the best available image URL.
     """
 
     if not isinstance(obj, dict):
         return None
 
+    # --------------------------------------------------------
+    # Direct image fields
+    # --------------------------------------------------------
+
     for key in (
+        "profile_pic_url_hd",
+        "hd_profile_pic_url",
+        "profile_pic_url",
         "display_url",
         "image_url",
         "thumbnail_url",
-        "profile_pic_url_hd",
-        "profile_pic_url",
+        "thumbnail_src",
+        "display_src",
+        "image",
     ):
 
         value = obj.get(key)
@@ -388,6 +539,10 @@ def best_image_url(obj):
             and value.startswith("http")
         ):
             return value
+
+    # --------------------------------------------------------
+    # image_versions2
+    # --------------------------------------------------------
 
     versions = obj.get(
         "image_versions2"
@@ -420,21 +575,90 @@ def best_image_url(obj):
                 width = item.get("width") or 0
                 height = item.get("height") or 0
 
-                area = width * height
+                try:
+                    area = (
+                        int(width)
+                        * int(height)
+                    )
+
+                except Exception:
+                    area = 0
 
                 if area > best_area:
 
                     best_area = area
                     best = url
 
-            return best
+            if best:
+                return best
+
+    # --------------------------------------------------------
+    # display_resources
+    # --------------------------------------------------------
+
+    resources = obj.get(
+        "display_resources"
+    )
+
+    if isinstance(resources, list):
+
+        candidates = []
+
+        for item in resources:
+
+            if not isinstance(item, dict):
+                continue
+
+            url = item.get(
+                "src"
+            ) or item.get(
+                "url"
+            )
+
+            if (
+                not isinstance(url, str)
+                or not url.startswith("http")
+            ):
+                continue
+
+            width = item.get("config_width") or 0
+            height = item.get("config_height") or 0
+
+            try:
+                area = (
+                    int(width)
+                    * int(height)
+                )
+
+            except Exception:
+                area = 0
+
+            candidates.append(
+                (
+                    area,
+                    url,
+                )
+            )
+
+        if candidates:
+
+            candidates.sort(
+                key=lambda item: item[0],
+                reverse=True,
+            )
+
+            return candidates[0][1]
 
     return None
 
 
+# ============================================================
+# MEDIA URL + TYPE
+# ============================================================
+
 def media_url_and_type(obj):
     """
-    Prefer video over image.
+    Prefer video when both video and image are available.
     """
 
     video = best_video_url(obj)
@@ -459,6 +683,10 @@ def download_file(
     url,
     filename,
 ):
+    """
+    Download a remote media URL to disk.
+    """
+
     response = session.get(
         url,
         stream=True,
@@ -468,6 +696,7 @@ def download_file(
                 "Mozilla/5.0 "
                 "(Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
                 "Chrome/120 Safari/537.36"
             )
         },
@@ -475,7 +704,10 @@ def download_file(
 
     response.raise_for_status()
 
-    with open(filename, "wb") as file:
+    with open(
+        filename,
+        "wb",
+    ) as file:
 
         for chunk in response.iter_content(
             chunk_size=1024 * 1024
@@ -486,94 +718,7 @@ def download_file(
 
 
 # ============================================================
-# YT-DLP FALLBACK
-# ============================================================
-
-def download_with_ytdlp(
-    url,
-    temp_dir,
-):
-    """
-    Fallback when RapidAPI doesn't return a
-    usable media URL.
-    """
-
-    try:
-        import yt_dlp
-
-    except ImportError as exc:
-
-        raise RuntimeError(
-            "yt-dlp is not installed. "
-            "Add yt-dlp to requirements.txt."
-        ) from exc
-
-    output = os.path.join(
-        temp_dir,
-        "%(id)s.%(ext)s",
-    )
-
-    options = {
-        "format": "best[ext=mp4]/best",
-        "outtmpl": output,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "restrictfilenames": True,
-        "retries": 3,
-        "socket_timeout": 60,
-    }
-
-    with yt_dlp.YoutubeDL(
-        options
-    ) as ydl:
-
-        info = ydl.extract_info(
-            url,
-            download=True,
-        )
-
-        files = []
-
-        requested = (
-            info.get(
-                "requested_downloads"
-            )
-            or []
-        )
-
-        for item in requested:
-
-            path = item.get(
-                "filepath"
-            )
-
-            if (
-                path
-                and os.path.isfile(path)
-            ):
-                files.append(path)
-
-        if not files:
-
-            path = ydl.prepare_filename(
-                info
-            )
-
-            if os.path.isfile(path):
-                files.append(path)
-
-        if not files:
-
-            raise RuntimeError(
-                "yt-dlp did not produce a file."
-            )
-
-        return files
-
-
-# ============================================================
-# PROFILE
+# PROFILE PICTURE
 # ============================================================
 
 def download_profile(
@@ -581,6 +726,14 @@ def download_profile(
     url,
     temp_dir,
 ):
+    """
+    Download Instagram profile picture.
+
+    API:
+        GET /user_info
+        user_name=<username>
+    """
+
     username = extract_username(url)
 
     if not username:
@@ -589,13 +742,26 @@ def download_profile(
             "Invalid Instagram profile URL."
         )
 
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # The API screenshot shows:
+    #
+    # user_name *
+    #
+    # NOT username.
+    # --------------------------------------------------------
+
     data = api_get(
         session,
         "/user_info",
         {
-            "username": username
+            "user_name": username,
         },
     )
+
+    # --------------------------------------------------------
+    # Try HD profile picture first
+    # --------------------------------------------------------
 
     image_url = first_value(
         data,
@@ -606,10 +772,15 @@ def download_profile(
         ),
     )
 
+    # --------------------------------------------------------
+    # Fallback to generic image extraction
+    # --------------------------------------------------------
+
     if (
         not isinstance(image_url, str)
         or not image_url.startswith("http")
     ):
+
         image_url = best_image_url(
             data
         )
@@ -617,7 +788,8 @@ def download_profile(
     if not image_url:
 
         raise RuntimeError(
-            "Profile picture not found."
+            "Profile picture was not found "
+            "in the UserInfo response."
         )
 
     safe_username = re.sub(
@@ -649,42 +821,106 @@ def get_media_info(
     shortcode,
 ):
     """
-    Query media_info_v2.
+    Get information about a single Instagram
+    post/reel.
 
-    Try both common parameter names because
-    providers can expose slightly different
-    parameter names.
+    API screenshot confirms:
+
+        GET MediaInfo_v2
+
+        short_code *
     """
 
-    last_error = None
+    if not shortcode:
 
-    for parameter in (
-        "code",
-        "shortcode",
-    ):
+        raise RuntimeError(
+            "Instagram shortcode is missing."
+        )
 
-        try:
+    # IMPORTANT:
+    # Exact parameter from your API screenshot:
+    #
+    # short_code
+    #
+    # NOT:
+    # code
+    # shortcode
 
-            return api_get(
-                session,
-                "/media_info_v2",
-                {
-                    parameter: shortcode
-                },
-            )
-
-        except Exception as exc:
-
-            last_error = exc
-
-    if last_error:
-        raise last_error
-
-    return None
+    return api_get(
+        session,
+        "/media_info_v2",
+        {
+            "short_code": shortcode,
+        },
+    )
 
 
 # ============================================================
-# POST / REEL
+# CAROUSEL MEDIA
+# ============================================================
+
+def get_carousel_items(media):
+    """
+    Extract carousel items from several common
+    Instagram response formats.
+    """
+
+    if not isinstance(media, dict):
+        return []
+
+    possible_keys = (
+        "carousel_media",
+        "carousel",
+        "items",
+        "children",
+        "edge_sidecar_to_children",
+    )
+
+    for key in possible_keys:
+
+        value = media.get(key)
+
+        # Direct list
+        if isinstance(value, list):
+            return value
+
+        # GraphQL-style:
+        #
+        # {
+        #   "edges": [
+        #       {"node": {...}}
+        #   ]
+        # }
+        if isinstance(value, dict):
+
+            edges = value.get(
+                "edges"
+            )
+
+            if isinstance(edges, list):
+
+                items = []
+
+                for edge in edges:
+
+                    if not isinstance(edge, dict):
+                        continue
+
+                    node = edge.get(
+                        "node"
+                    )
+
+                    if isinstance(node, dict):
+                        items.append(node)
+
+                if items:
+                    return items
+
+    return []
+
+
+# ============================================================
+# DOWNLOAD POST / REEL
 # ============================================================
 
 def download_media(
@@ -692,56 +928,57 @@ def download_media(
     url,
     temp_dir,
 ):
+    """
+    Download a single Instagram post or Reel.
+
+    Uses:
+        /media_info_v2
+        short_code=<shortcode>
+    """
+
     shortcode = extract_shortcode(url)
 
     if not shortcode:
 
         raise RuntimeError(
-            "Could not extract Instagram shortcode."
+            "Could not extract Instagram shortcode "
+            "from the URL."
         )
+
+    # --------------------------------------------------------
+    # API request
+    # --------------------------------------------------------
 
     data = get_media_info(
         session,
         shortcode,
     )
 
-    media = find_shortcode_object(
+    # --------------------------------------------------------
+    # Locate media object
+    # --------------------------------------------------------
+
+    media = find_media_object(
         data,
         shortcode,
     )
 
-    # Some API responses return the media
-    # object directly without a shortcode.
-    if media is None:
-
-        possible = []
-
-        for obj in walk(data):
-
-            if (
-                best_video_url(obj)
-                or best_image_url(obj)
-            ):
-                possible.append(obj)
-
-        if possible:
-            media = possible[0]
-
     if media is None:
 
         raise RuntimeError(
-            "Media information was not found."
+            "Media information was not found "
+            "in the API response."
         )
 
     # ========================================================
     # CAROUSEL
     # ========================================================
 
-    carousel = media.get(
-        "carousel_media"
+    carousel = get_carousel_items(
+        media
     )
 
-    if isinstance(carousel, list):
+    if carousel:
 
         files = []
 
@@ -768,7 +1005,9 @@ def download_media(
                 filename,
             )
 
-            files.append(filename)
+            files.append(
+                filename
+            )
 
         if files:
             return files
@@ -784,8 +1023,8 @@ def download_media(
     if not media_url:
 
         raise RuntimeError(
-            "No downloadable media URL "
-            "was returned."
+            "No downloadable media URL was returned "
+            "by MediaInfo_v2."
         )
 
     filename = os.path.join(
@@ -803,98 +1042,204 @@ def download_media(
 
 
 # ============================================================
-# MAIN FUNCTION
+# YT-DLP FALLBACK
+# ============================================================
+
+def download_with_ytdlp(
+    url,
+    temp_dir,
+):
+    """
+    Fallback downloader.
+
+    Used if RapidAPI does not return a usable
+    media URL.
+    """
+
+    try:
+
+        import yt_dlp
+
+    except ImportError as exc:
+
+        raise RuntimeError(
+            "yt-dlp is not installed."
+        ) from exc
+
+    output = os.path.join(
+        temp_dir,
+        "%(id)s.%(ext)s",
+    )
+
+    options = {
+        "format": "best[ext=mp4]/best",
+        "outtmpl": output,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "restrictfilenames": True,
+        "retries": 3,
+        "socket_timeout": 60,
+    }
+
+    with yt_dlp.YoutubeDL(
+        options
+    ) as ydl:
+
+        info = ydl.extract_info(
+            url,
+            download=True,
+        )
+
+        files = []
+
+        # ----------------------------------------------------
+        # requested_downloads
+        # ----------------------------------------------------
+
+        requested = (
+            info.get(
+                "requested_downloads"
+            )
+            or []
+        )
+
+        for item in requested:
+
+            path = item.get(
+                "filepath"
+            )
+
+            if (
+                path
+                and os.path.isfile(path)
+            ):
+                files.append(path)
+
+        # ----------------------------------------------------
+        # Normal output path
+        # ----------------------------------------------------
+
+        if not files:
+
+            path = ydl.prepare_filename(
+                info
+            )
+
+            if os.path.isfile(path):
+                files.append(path)
+
+        if not files:
+
+            raise RuntimeError(
+                "yt-dlp did not produce a file."
+            )
+
+        return files
+
+
+# ============================================================
+# MAIN DOWNLOAD FUNCTION
 # ============================================================
 
 def download_instagram(
-    url: str
+    url,
 ):
     """
-    Main downloader entry point.
+    Main entry point used by messages.py.
 
-    Supports:
+    Supported:
 
-    - Instagram Reels
-    - Instagram Posts
-    - Instagram TV
-    - Instagram profiles
+        Instagram Reel
+        Instagram post
+        Instagram video
+        Instagram image
+        Instagram carousel
+        Instagram profile picture
     """
 
-    url = url.strip()
-
-    parsed = urlparse(url)
-
-    if parsed.netloc.lower() not in {
-        "instagram.com",
-        "www.instagram.com",
-        "m.instagram.com",
-    }:
-
-        raise ValueError(
+    if not isinstance(url, str):
+        raise RuntimeError(
             "Invalid Instagram URL."
         )
 
-    temp_dir = tempfile.mkdtemp()
+    url = url.strip()
+
+    if "instagram.com" not in url.lower():
+
+        raise RuntimeError(
+            "This is not an Instagram URL."
+        )
+
+    temp_dir = tempfile.mkdtemp(
+        prefix="instagram_"
+    )
 
     session = requests.Session()
 
     try:
 
-        # ----------------------------------------------------
-        # PROFILE
-        # ----------------------------------------------------
+        # ====================================================
+        # PROFILE PICTURE
+        # ====================================================
 
         if is_profile_url(url):
 
-            return download_profile(
-                session,
-                url,
-                temp_dir,
-            )
-
-        # ----------------------------------------------------
-        # REEL / POST
-        # ----------------------------------------------------
-
-        if (
-            is_reel_url(url)
-            or is_post_url(url)
-        ):
-
             try:
 
-                return download_media(
+                return download_profile(
                     session,
                     url,
                     temp_dir,
                 )
 
-            except Exception as api_error:
+            except Exception:
 
-                # Try yt-dlp if the API cannot
-                # provide usable media.
+                # Profile picture fallback through
+                # yt-dlp is generally not useful, so
+                # preserve the original API error.
+                raise
 
-                try:
+        # ====================================================
+        # POST / REEL
+        # ====================================================
 
-                    return download_with_ytdlp(
-                        url,
-                        temp_dir,
-                    )
+        try:
 
-                except Exception:
+            return download_media(
+                session,
+                url,
+                temp_dir,
+            )
 
-                    # Keep the original API error.
-                    raise api_error
+        except Exception as rapidapi_error:
 
-        raise ValueError(
-            "Unsupported Instagram URL."
-        )
+            # ------------------------------------------------
+            # Try yt-dlp fallback.
+            #
+            # Do not hide RapidAPI errors such as 401,
+            # 403, 407 or 429 if yt-dlp also fails.
+            # ------------------------------------------------
+
+            try:
+
+                return download_with_ytdlp(
+                    url,
+                    temp_dir,
+                )
+
+            except Exception as ytdlp_error:
+
+                raise RuntimeError(
+                    "RapidAPI download failed: "
+                    f"{rapidapi_error}. "
+                    "yt-dlp fallback also failed: "
+                    f"{ytdlp_error}"
+                ) from rapidapi_error
 
     except Exception:
 
-        # Clean temporary files if the
-        # operation fails.
-
+        # Remove temporary directory on failure.
         shutil.rmtree(
             temp_dir,
             ignore_errors=True,
